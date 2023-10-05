@@ -12,4 +12,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # Local
-from . import text_classification, text_generation, token_classification
+from . import reranker, text_classification, text_generation, token_classification
