@@ -14,7 +14,7 @@ classifiers=[
     "License :: OSI Approved :: Apache Software License"
 ]
 dependencies = [
-    "caikit[runtime-grpc,runtime-http]>=0.22.0,<0.23.0",
+    "caikit[runtime-grpc,runtime-http]@file:///users/markstur/gh/caikit",
     "caikit-tgis-backend>=0.1.17,<0.2.0",
     # TODO: loosen dependencies
     "accelerate>=0.22.0",
@@ -33,6 +33,18 @@ dependencies = [
     # the build fix, we pulling peft from main branch commit. In future, we will pull PEFT from
     # pypi
     "peft@git+https://github.com/huggingface/peft.git#8c17d556a8fe9522e10d73d7bd3fad46a6ecae14"
+]
+
+[project.optional-dependencies]
+
+## Runtime Extra Sets ##
+
+sentence-transformers = [
+    "sentence-transformers>=2.2.2,<2.3.0"
+]
+
+all = [
+    "caikit[sentence-transformers]",
 ]
 
 [tool.setuptools.packages.find]
