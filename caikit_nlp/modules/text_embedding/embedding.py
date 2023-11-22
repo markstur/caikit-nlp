@@ -17,6 +17,10 @@ from typing import List, Optional
 import importlib
 import os
 
+# Third Party
+from torch.backends import mps
+import torch
+
 # First Party
 from caikit.core import ModuleBase, ModuleConfig, ModuleSaver, module
 from caikit.core.data_model.json_dict import JsonDict
@@ -73,6 +77,39 @@ except ModuleNotFoundError:
     SentenceTransformer = SentenceTransformerNotAvailable
 
 
+# For testing env vars for values that mean false
+FALSY = ("no", "n", "false", "0", "f", "off")
+
+# When IPEX_OPTIMIZE is not false, attempt to import the library and use it.
+IPEX_OPTIMIZE = os.getenv("IPEX_OPTIMIZE", "false").lower() not in FALSY
+if IPEX_OPTIMIZE:
+    try:
+        ipex = importlib.import_module("intel_extension_for_pytorch")
+    except Exception as ie:  # pylint: disable=broad-exception-caught
+        # We don't require the module so catch, disable, log, proceed.
+        IPEX_OPTIMIZE = False
+        msg = (
+            f"IPEX_OPTIMIZE enabled in env, but skipping ipex.optimize() because "
+            f"import intel_extension_for_pytorch failed with exception: {ie}"
+        )
+        logger.warning(msg, exc_info=1)
+if IPEX_OPTIMIZE:
+    # Optionally use "xpu" (IPEX on GPU instead of IPEX on CPU)
+    USE_XPU = os.getenv("USE_XPU", "false").lower() not in FALSY
+    USE_MPS = False  # Don't use "mps" with IPEX.
+else:
+    USE_XPU = False  # We don't USE_XPU when we don't IPEX_OPTIMIZE
+    # Otherwise when USE_MPS is not false, use device "mps" if it is available
+    USE_MPS = (
+        os.getenv("USE_MPS", "false").lower() not in FALSY
+        and mps.is_built()
+        and mps.is_available()
+    )
+
+# torch.compile won't work everywhere, but when set we'll try it
+PT2_COMPILE = os.getenv("PT2_COMPILE", "false").lower() not in FALSY
+
+
 @module(
     "eeb12558-b4fa-4f34-a9fd-3f5890e9cd3f",
     "EmbeddingModule",
@@ -123,7 +160,42 @@ class EmbeddingModule(ModuleBase):
         artifacts_path = os.path.abspath(os.path.join(model_path, artifacts_path))
         error.dir_check("<NLP34197772E>", artifacts_path)
 
-        return cls.bootstrap(model_name_or_path=artifacts_path)
+        gpu = (
+            "xpu"
+            if USE_XPU
+            else "mps"
+            if USE_MPS
+            else "cuda"
+            if torch.cuda.is_available()
+            else None
+        )
+        model = SentenceTransformer(model_name_or_path=artifacts_path, device=gpu)
+
+        if gpu is not None:
+            model.to(torch.device(gpu))
+        model = cls._optimize(model)
+        return cls(model)
+
+    @staticmethod
+    def _optimize(model):
+        if IPEX_OPTIMIZE:
+            model = ipex.optimize(model)
+            backend = "ipex"
+        elif USE_MPS:
+            backend = mps
+        else:
+            backend = "inductor"  # default backend
+        if PT2_COMPILE:
+            try:
+                model = torch.compile(model, backend=backend, mode="max-autotune")
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                # Not always supported (e.g. in a python version) so catch, log, proceed.
+                warn_msg = (
+                    f"PT2_COMPILE enabled in env, but continuing without torch.compile() "
+                    f"because it failed with exception: {e}"
+                )
+                logger.warning(warn_msg, exc_info=True)
+        return model
 
     def _truncate_input_tokens(
         self, truncate_input_tokens, texts: List[str]
