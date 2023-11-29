@@ -7,6 +7,7 @@ import tempfile
 
 # Third Party
 from pytest import approx
+from torch.backends import mps
 import numpy as np
 import pytest
 
@@ -378,3 +379,294 @@ def test_run_sentence_similarities():
         assert len(scores) == len(SENTENCES)
         for score in scores:
             assert isinstance(score, float)
+
+
+@pytest.mark.parametrize(
+    "use_ipex, use_xpu, use_mps, expected",
+    [
+        (True, "true", "true", "xpu"),
+        (True, "true", "false", "xpu"),
+        (True, "false", "true", None),
+        (True, "false", "false", None),
+        (False, "false", "false", None),
+        (False, "true", "false", None),
+        (
+            False,
+            "false",
+            "true",
+            "mps" if mps.is_built() and mps.is_available() else None,
+        ),
+        (
+            False,
+            "true",
+            "true",
+            "mps" if mps.is_built() and mps.is_available() else None,
+        ),
+    ],
+)
+def test__select_device(use_ipex, use_xpu, use_mps, expected, monkeypatch):
+    monkeypatch.setenv("USE_XPU", use_xpu)
+    monkeypatch.setenv("USE_MPS", use_mps)
+    assert EmbeddingModule._select_device(use_ipex) == expected
+
+
+@pytest.mark.parametrize(
+    "use_ipex, use_device, expected",
+    [
+        (True, None, "ipex"),
+        (True, "mps", "ipex"),
+        (False, "mps", mps),
+        (False, None, "inductor"),
+    ],
+)
+def test__get_backend(use_ipex, use_device, expected):
+    # Make the Mac MPS test work depending on availability
+    assert EmbeddingModule._get_backend(use_ipex, use_device) == expected
+
+
+@pytest.mark.parametrize(
+    "use_ipex",
+    [None, "true", "True", "False", "false"],
+)
+def test__get_ipex(use_ipex, monkeypatch):
+    """Test that _get_ipex returns False instead of raising an exception.
+
+    Assumes that when running tests, we won't have IPEX installed.
+    """
+    monkeypatch.setenv("IPEX_OPTIMIZE", use_ipex)
+    assert not EmbeddingModule._get_ipex()
+
+
+def test__optimize(monkeypatch):
+    """Test that _optimize does nothing when disabled"""
+    fake = "fake model"  # Will be returned as-is
+    monkeypatch.setenv("PT2_COMPILE", "False")
+    assert fake == EmbeddingModule._optimize(fake, False, "bogus")
+
+
+@pytest.mark.parametrize(
+    "truncate_input_tokens, expected_len", [(99, 205), (333, 673), (-1, 1022)]
+)
+def test__truncate_input_tokens(truncate_input_tokens, expected_len):
+    model = BOOTSTRAPPED_MODEL
+    model_max = model.model.max_seq_length
+
+    too_long = "x " * (model_max - 1)  # This will go over
+    actual = model._truncate_input_tokens(
+        truncate_input_tokens=truncate_input_tokens, texts=[too_long]
+    )[0]
+
+    assert len(actual) == expected_len
+
+
+@pytest.mark.parametrize("truncate_input_tokens", [0, 513])
+def test__truncate_input_tokens_raises(truncate_input_tokens):
+    model = BOOTSTRAPPED_MODEL
+    model_max = model.model.max_seq_length
+
+    too_long = "x " * (model_max - 1)  # This will go over
+    with pytest.raises(ValueError):
+        model._truncate_input_tokens(
+            truncate_input_tokens=truncate_input_tokens, texts=[too_long]
+        )
+
+
+def test_not_too_many_tokens():
+    """Happy path for the endpoints using text that is not too many tokens."""
+
+    model = BOOTSTRAPPED_MODEL
+    model_max = model.model.max_seq_length
+
+    ok = "x " * (model_max - 2)  # Subtract 2 for begin/end tokens
+
+    # embedding(s)
+    model.run_embedding(text=ok)
+    model.run_embeddings(texts=[ok])
+
+    # sentence similarity(ies) test both source_sentence and sentences
+    model.run_sentence_similarity(source_sentence=ok, sentences=[ok])
+    model.run_sentence_similarities(source_sentences=[ok], sentences=[ok])
+
+    # reranker test both query and document text
+    model.run_rerank_query(query=ok, documents=[{"text": ok}])
+    model.run_rerank_queries(queries=[ok], documents=[{"text": ok}])
+
+
+def test_too_many_tokens_default():
+    """These endpoints raise an error when truncation would happen."""
+
+    model = BOOTSTRAPPED_MODEL
+    model_max = model.model.max_seq_length
+
+    ok = "x " * (model_max - 2)  # Subtract 2 for begin/end tokens
+    too_long = "x " * (model_max - 1)  # This will go over
+
+    # embedding(s)
+    with pytest.raises(ValueError):
+        model.run_embedding(text=too_long)
+    with pytest.raises(ValueError):
+        model.run_embeddings(texts=[too_long])
+
+    # sentence similarity(ies) test both source_sentence and sentences
+    with pytest.raises(ValueError):
+        model.run_sentence_similarity(source_sentence=too_long, sentences=[ok])
+    with pytest.raises(ValueError):
+        model.run_sentence_similarity(source_sentence=ok, sentences=[too_long])
+
+    with pytest.raises(ValueError):
+        model.run_sentence_similarities(source_sentences=[too_long], sentences=[ok])
+    with pytest.raises(ValueError):
+        model.run_sentence_similarities(source_sentences=[ok], sentences=[too_long])
+
+    # reranker test both query and document text
+    with pytest.raises(ValueError):
+        model.run_rerank_query(query=too_long, documents=[{"text": ok}])
+    with pytest.raises(ValueError):
+        model.run_rerank_query(query=ok, documents=[{"text": too_long}])
+
+    with pytest.raises(ValueError):
+        model.run_rerank_queries(queries=[too_long], documents=[{"text": ok}])
+    with pytest.raises(ValueError):
+        model.run_rerank_queries(queries=[ok], documents=[{"text": too_long}])
+
+
+@pytest.mark.parametrize("truncate_input_tokens", [0, 513])
+def test_too_many_tokens_error_params(truncate_input_tokens):
+    """truncate_input_tokens does not prevent these endpoints from raising an error.
+
+    Test with 0 which uses the max model len (512) to determine truncation and raise error.
+    Test with 513 (> 512) which detects truncation over 512 and raises an error.
+    """
+
+    model = BOOTSTRAPPED_MODEL
+    model_max = model.model.max_seq_length
+
+    ok = "x " * (model_max - 2)  # Subtract 2 for begin/end tokens
+    too_long = "x " * (model_max - 1)  # This will go over
+
+    # embedding(s)
+    with pytest.raises(ValueError):
+        model.run_embedding(text=too_long, truncate_input_tokens=truncate_input_tokens)
+    with pytest.raises(ValueError):
+        model.run_embeddings(
+            texts=[too_long], truncate_input_tokens=truncate_input_tokens
+        )
+
+    # sentence similarity(ies) test both source_sentence and sentences
+    with pytest.raises(ValueError):
+        model.run_sentence_similarity(
+            source_sentence=too_long,
+            sentences=[ok],
+            truncate_input_tokens=truncate_input_tokens,
+        )
+    with pytest.raises(ValueError):
+        model.run_sentence_similarity(
+            source_sentence=ok,
+            sentences=[too_long],
+            truncate_input_tokens=truncate_input_tokens,
+        )
+
+    with pytest.raises(ValueError):
+        model.run_sentence_similarities(
+            source_sentences=[too_long],
+            sentences=[ok],
+            truncate_input_tokens=truncate_input_tokens,
+        )
+    with pytest.raises(ValueError):
+        model.run_sentence_similarities(
+            source_sentences=[ok],
+            sentences=[too_long],
+            truncate_input_tokens=truncate_input_tokens,
+        )
+
+    # reranker test both query and document text
+    with pytest.raises(ValueError):
+        model.run_rerank_query(
+            query=too_long,
+            documents=[{"text": ok}],
+            truncate_input_tokens=truncate_input_tokens,
+        )
+    with pytest.raises(ValueError):
+        model.run_rerank_query(
+            query=ok,
+            documents=[{"text": too_long}],
+            truncate_input_tokens=truncate_input_tokens,
+        )
+
+    with pytest.raises(ValueError):
+        model.run_rerank_queries(
+            queries=[too_long],
+            documents=[{"text": ok}],
+            truncate_input_tokens=truncate_input_tokens,
+        )
+    with pytest.raises(ValueError):
+        model.run_rerank_queries(
+            queries=[ok],
+            documents=[{"text": too_long}],
+            truncate_input_tokens=truncate_input_tokens,
+        )
+
+
+@pytest.mark.parametrize("truncate_input_tokens", [-1, 99, 512])
+def test_too_many_tokens_with_truncation_working(truncate_input_tokens):
+    """truncate_input_tokens prevents these endpoints from raising an error when too many tokens.
+
+    Test with -1 which lets the model do truncation instead of raising an error.
+    Test with 99 (< 512) which causes our code to do the truncation instead of raising an error.
+    """
+
+    model = BOOTSTRAPPED_MODEL
+    model_max = model.model.max_seq_length
+
+    ok = "x " * (model_max - 2)  # Subtract 2 for begin/end tokens
+    too_long = "x " * (model_max - 1)  # This will go over
+
+    # embedding(s)
+    model.run_embedding(text=too_long, truncate_input_tokens=truncate_input_tokens)
+    model.run_embeddings(texts=[too_long], truncate_input_tokens=truncate_input_tokens)
+
+    # sentence similarity(ies) test both source_sentence and sentences
+    model.run_sentence_similarity(
+        source_sentence=too_long,
+        sentences=[ok],
+        truncate_input_tokens=truncate_input_tokens,
+    )
+    model.run_sentence_similarity(
+        source_sentence=ok,
+        sentences=[too_long],
+        truncate_input_tokens=truncate_input_tokens,
+    )
+
+    model.run_sentence_similarities(
+        source_sentences=[too_long],
+        sentences=[ok],
+        truncate_input_tokens=truncate_input_tokens,
+    )
+    model.run_sentence_similarities(
+        source_sentences=[ok],
+        sentences=[too_long],
+        truncate_input_tokens=truncate_input_tokens,
+    )
+
+    # reranker test both query and document text
+    model.run_rerank_query(
+        query=too_long,
+        documents=[{"text": ok}],
+        truncate_input_tokens=truncate_input_tokens,
+    )
+    model.run_rerank_query(
+        query=ok,
+        documents=[{"text": too_long}],
+        truncate_input_tokens=truncate_input_tokens,
+    )
+
+    model.run_rerank_queries(
+        queries=[too_long],
+        documents=[{"text": ok}],
+        truncate_input_tokens=truncate_input_tokens,
+    )
+    model.run_rerank_queries(
+        queries=[ok],
+        documents=[{"text": too_long}],
+        truncate_input_tokens=truncate_input_tokens,
+    )
