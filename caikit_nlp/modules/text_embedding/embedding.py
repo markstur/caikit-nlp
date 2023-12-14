@@ -89,6 +89,10 @@ def env_var_to_int(name, default):
 
 # Batch size for encode() if <= 0 or invalid, the sentence-transformers default is used
 BATCH_SIZE = env_var_to_int("BATCH_SIZE", default=0)
+CHUNK_SIZE = env_var_to_int("CHUNK_SIZE", default=0)
+
+# Use encode_multi_process if enabled
+ENCODE_MULTI_PROCESS = os.getenv("ENCODE_MULTI_PROCESS", "false").lower() not in FALSY
 
 # Retry count for catching sporadic encode() or tokenize() errors (in case if they come back)
 RETRY_COUNT = env_var_to_int("RETRY_COUNT", default=5)
@@ -124,6 +128,11 @@ class EmbeddingModule(ModuleBase):
         # otherwise when using Python threads and tokenize for truncation followed
         # by sentence-transformers tokenize/encode.
         self._tokenizer = deepcopy(self.model.tokenizer)
+
+        if ENCODE_MULTI_PROCESS:
+            self.pool = self.model.start_multi_process_pool(["cpu"] * 10)
+        else:
+            self.pool = False
 
     @classmethod
     def load(cls, model_path: str, *args, **kwargs) -> "EmbeddingModule":
@@ -240,6 +249,7 @@ class EmbeddingModule(ModuleBase):
 
     @staticmethod
     def _with_retry(fn, *args, **kwargs):
+        root_exception = None
         retries = max(RETRY_COUNT, 0)
         for count in range(1 + retries):  # try once plus retries (if needed)
             try:
@@ -247,8 +257,11 @@ class EmbeddingModule(ModuleBase):
             except Exception as e:  # pylint: disable=broad-exception-caught
                 warn_msg = f"Retry {fn} due to: {e}"
                 logger.warning(warn_msg, exc_info=True)
+                if root_exception is None:
+                    root_exception = e  # save first exception here
                 time.sleep(0.1 * (count * 2))
-        error.log_raise("<NLP31069292E>", RuntimeError(f"Too many retries of fn={fn}"))
+        logger.error("<NLP31069292E>", f"Too many retries of fn={fn}")
+        raise root_exception
 
     def _encode_with_retry(self, *args, **kwargs):
         """All encode calls should use this for consistent param adding and retry loop"""
@@ -259,8 +272,23 @@ class EmbeddingModule(ModuleBase):
                 kwargs = {}
             if "batch_size" not in kwargs:
                 kwargs["batch_size"] = BATCH_SIZE
+        if CHUNK_SIZE > 0:
+            if kwargs is None:
+                kwargs = {}
+            if "chunk_size" not in kwargs:
+                kwargs["chunk_size"] = CHUNK_SIZE
 
-        return self._with_retry(self.model.encode, *args, **kwargs)
+        if not self.pool:
+            return self._with_retry(self.model.encode, *args, **kwargs)
+        else:
+            return self._with_retry(
+                self.model.encode_multi_process, *args, self.pool, **kwargs
+            )
+
+        # TODO: only works with texts array not str
+        # TODO: only works with texts array not str
+        # TODO: only works with texts array not str
+        # TODO: only works with texts array not str
 
     def _truncate_input_tokens(
         self, truncate_input_tokens, texts: List[str]
