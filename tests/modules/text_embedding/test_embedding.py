@@ -21,6 +21,7 @@ from caikit.interfaces.nlp.data_model import (
     RerankScore,
     RerankScores,
 )
+from caikit.runtime.types.caikit_runtime_exception import CaikitRuntimeException
 
 # Local
 from caikit_nlp.modules.text_embedding import EmbeddingModule
@@ -510,7 +511,7 @@ def test_too_many_tokens_default(loaded_model):
     too_long = "x " * (model_max - 1)  # This will go over
 
     # embedding(s)
-    with pytest.raises(ValueError):
+    with pytest.raises(CaikitRuntimeException):
         loaded_model.run_embedding(text=too_long)
     with pytest.raises(ValueError):
         loaded_model.run_embeddings(texts=[too_long])
@@ -556,7 +557,7 @@ def test_too_many_tokens_error_params(truncate_input_tokens, loaded_model):
     too_long = "x " * (model_max - 1)  # This will go over
 
     # embedding(s)
-    with pytest.raises(ValueError):
+    with pytest.raises(CaikitRuntimeException):
         loaded_model.run_embedding(
             text=too_long, truncate_input_tokens=truncate_input_tokens
         )
@@ -733,12 +734,14 @@ def test__with_retry_fail(loaded_model):
     def fn():
         assert 0
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(CaikitRuntimeException):
         loaded_model._with_retry(fn)
 
 
-def test__with_retry_fail_fail_win(loaded_model):
+def test__with_retry_fail_fail_win(loaded_model, monkeypatch):
     """fn needs a few tries, logs, loops and succeeds"""
+
+    monkeypatch.setenv("RETRY_COUNT", 6)  # test needs at least 3 tries
 
     def generate_ints():
         yield from range(9)  # More than enough for retry loop
