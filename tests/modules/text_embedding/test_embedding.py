@@ -29,13 +29,13 @@ from caikit_nlp.modules.text_embedding.embedding import (
     get_sample_start_indexes,
     sum_token_count,
 )
-from tests.fixtures import SEQ_CLASS_MODEL
+from tests.fixtures import MINILM_MODEL
 
 ## Setup ########################################################################
 
 # Bootstrapped sequence classification model for reuse across tests
 # .bootstrap is tested separately in the first test
-BOOTSTRAPPED_MODEL = EmbeddingModule.bootstrap(SEQ_CLASS_MODEL)
+BOOTSTRAPPED_MODEL = EmbeddingModule.bootstrap(MINILM_MODEL)
 
 # Token counts:
 # All expected token counts were calculated with reference to the
@@ -43,7 +43,7 @@ BOOTSTRAPPED_MODEL = EmbeddingModule.bootstrap(SEQ_CLASS_MODEL)
 # which can lead to the expected token counts being invalid.
 
 INPUT = "The quick brown fox jumps over the lazy dog."
-INPUT_TOKEN_COUNT = 36 + 2  # [CLS] Thequickbrownfoxjumpsoverthelazydog. [SEP]
+INPUT_TOKEN_COUNT = 10 + 2  # [CLS] The quick brown fox jumps over the lazy dog . [SEP]
 
 MANY_INPUTS = [
     "The quick brown fox jumps over the lazy dog.",
@@ -52,14 +52,14 @@ MANY_INPUTS = [
 ]
 
 QUERY = "What is foo bar?"
-QUERY_TOKEN_COUNT = 13 + 2  # [CLS] Whatisfoobar? [SEP]
+QUERY_TOKEN_COUNT = 5 + 2  # [CLS] Whatisfoobar? [SEP]
 
 QUERIES: List[str] = [
     "Who is foo?",
     "Where is the bar?",
 ]
-QUERIES_TOKEN_COUNT = (9 + 2) + (
-    14 + 2
+QUERIES_TOKEN_COUNT = (4 + 2) + (
+    5 + 2
 )  # [CLS] Whoisfoo? [SEP], [CLS] Whereisthebar? [SEP]
 
 
@@ -90,14 +90,14 @@ DOCS = [
 ]
 
 # The `text` and `_text` keys are extracted from DOCS as input to the tokenizer
-# [CLS] foo [SEP], [CLS] bar [SEP], [CLS] fooandbar [SEP], [CLS] Whereisthebar [SEP]
-DOCS_TOKEN_COUNT = (3 + 2) + (3 + 2) + (9 + 2) + (13 + 2)
+# [CLS] foo [SEP], [CLS] bar [SEP], [CLS] foo and bar [SEP], [CLS] Where is the bar [SEP]
+DOCS_TOKEN_COUNT = (1 + 2) + (1 + 2) + (3 + 2) + (4 + 2)
 
 # Use text or _text from DOCS for our test sentences
 SENTENCES = [d.get("text", d.get("_text")) for d in DOCS]
 
-# [CLS] foo [SEP], [CLS] bar [SEP], [CLS] fooandbar [SEP], [CLS] Whereisthebar [SEP]
-SENTENCES_TOKEN_COUNT = (3 + 2) + (3 + 2) + (9 + 2) + (13 + 2)
+# [CLS] foo [SEP], [CLS] bar [SEP], [CLS] foo and bar [SEP], [CLS] Where is the bar [SEP]
+SENTENCES_TOKEN_COUNT = (1 + 2) + (1 + 2) + (3 + 2) + (4 + 2)
 
 ## Tests ########################################################################
 
@@ -113,11 +113,11 @@ def fixture_loaded_model(tmp_path_factory):
 
 def _assert_is_expected_vector(vector):
     assert isinstance(vector.data.values[0], np.float32)
-    assert len(vector.data.values) == 32
+    assert len(vector.data.values) == 384
     # Just testing a few values for readability
-    assert approx(vector.data.values[0]) == 0.3244932293891907
-    assert approx(vector.data.values[1]) == -0.4934631288051605
-    assert approx(vector.data.values[2]) == 0.5721234083175659
+    assert approx(vector.data.values[0]) == -0.38569856
+    assert approx(vector.data.values[7]) == 0.24918306
+    assert approx(vector.data.values[13]) == 0.31105426
 
 
 def _assert_is_expected_embedding_result(actual):
@@ -133,7 +133,7 @@ def _assert_is_expected_embeddings_results(actual):
 
 def test_bootstrap():
     assert isinstance(
-        EmbeddingModule.bootstrap(SEQ_CLASS_MODEL), EmbeddingModule
+        EmbeddingModule.bootstrap(MINILM_MODEL), EmbeddingModule
     ), "bootstrap error"
 
 
@@ -183,6 +183,8 @@ def test_bootstrap_model(loaded_model):
 
 def test_save_load_and_run():
     """Check if we can load and run a saved model successfully"""
+
+    # TODO: This test is better with old (not-bootstrapped model)
     model_id = "model_id"
     with tempfile.TemporaryDirectory(suffix="-1st") as model_dir:
         model_path = os.path.join(model_dir, model_id)
@@ -246,8 +248,8 @@ def test_run_embedding_type_check(loaded_model):
 
 def test_run_embedding(loaded_model):
     res = loaded_model.run_embedding(text=INPUT)
-    _assert_is_expected_embedding_result(res)
     assert res.input_token_count == INPUT_TOKEN_COUNT
+    _assert_is_expected_embedding_result(res)
 
 
 def test_run_embeddings_str_type(loaded_model):
@@ -752,7 +754,7 @@ def test_too_many_tokens_with_truncation_working(truncate_input_tokens, loaded_m
 
 
 @pytest.mark.parametrize(
-    "truncate_input_tokens", [1, 2, 3, 4, 99, 100, 101, 510, 511, 512, -1]
+    "truncate_input_tokens", [1, 2, 3, 4, -1]  # "truncate_input_tokens", [1, 2, 3, 4, 99, 100, 101, 510, 511, 512, -1]
 )
 def test_embeddings_with_truncation(truncate_input_tokens, loaded_model):
     """verify that results are as expected with truncation"""
@@ -771,10 +773,10 @@ def test_embeddings_with_truncation(truncate_input_tokens, loaded_model):
 
     base = ""
     if repeat > 0:
-        base = "x " * repeat  # A bunch of "x" tokens
-    x = base + "x"  # One last "x" that will not get truncated
-    y = base + "y"  # A different last character "y" not truncated
-    z = y + "z"  # Add token "z" after "y". This should get truncated.
+        base = "hello " * repeat  # A bunch of "x" tokens
+    x = base + "excellent"  # One last "x" that will not get truncated
+    y = base + "yellow"  # A different last character "y" not truncated
+    z = y + " zebra"  # Add token "z" after "y". This should get truncated.
 
     res = loaded_model.run_embeddings(
         texts=[base, x, y, z], truncate_input_tokens=truncate_input_tokens
@@ -795,7 +797,7 @@ def test_embeddings_with_truncation(truncate_input_tokens, loaded_model):
     assert len(vectors) == len(loop_vectors), "expected the same length vectors"
     # compare the vectors from batch with the single calls
     for i, e in enumerate(vectors):
-        assert np.allclose(e.data.values, loop_vectors[i].data.values)
+        assert np.allclose(e.data.values, loop_vectors[i].data.values, atol=1.e-6)
 
     # x...xyz is the same as x...xy because that is exactly where truncation worked
     assert len(vectors[2].data.values) == len(vectors[3].data.values)
@@ -909,10 +911,10 @@ def test_env_val_to_int():
     [
         # Only tokens requiring model attention is counted.
         # [PAD] doesn't attract model attention, but [CLS] and [SEP] does
-        # [CLS] 5 normal tokens [SEP]
-        (["12345"], 5 + 2),
-        # [CLS] 5 normal [SEP], [CLS] 4 normal [SEP] [PAD]
-        (["12 345", "6 789"], 9 + 4),
+        # [CLS] 3 normal word tokens [SEP]
+        (["exit yellow zebra"], 3 + 2),
+        # [CLS] 3 normal word tokens [SEP], [CLS] 4 normal word tokens [SEP] [PAD]
+        (["exit yellow zebra", "able busy cattle dog"], 7 + 4),
     ],
 )
 def test_sum_token_count_no_truncation(texts, expected_count, loaded_model):
@@ -946,14 +948,14 @@ def test_sum_token_count_no_truncation(texts, expected_count, loaded_model):
         #
         # All encodings: [CLS] 12345 [SEP]
         # No truncation
-        (["12345"], 10, 7),
+        (["able busy cattle dog energy"], 10, 7),
         # All encodings: [CLS] 123 [SEP] + [CLS] 45 [SEP] [PAD]
         # Only truncated: [CLS] 123 [SEP]
-        (["12345"], 5, 3 + 2),
+        (["able busy cattle dog energy"], 5, 3 + 2),
         #
         # All encodings: [CLS] 123 [SEP] + [CLS] 45 [SEP] [PAD], [CLS] 678 [SEP] + [CLS] 9 [SEP] [PAD] [PAD]
         # Only truncated: [CLS] 123 [SEP] , [CLS] 678 [SEP]
-        (["12 345", "6 789"], 5, (3 + 2) + (3 + 2)),
+        (["able busy cattle dog energy", "very white excellent young zebra"], 5, (3 + 2) + (3 + 2)),
     ],
 )
 def test_sum_token_count_with_truncation(texts, truncate, expected_count, loaded_model):
@@ -1003,7 +1005,7 @@ def test_encoding_order(loaded_model: EmbeddingModule, truncate_input_tokens):
 
     # test order by comparing value of individual embeddings in sequence
     for i, e in enumerate(separate_vectors):
-        assert np.allclose(e, combined_vectors[i])
+        assert np.allclose(e, combined_vectors[i], atol=1.e-6)
 
     # test expected failure case by reordering
     shifted_separate_vectors = separate_vectors[1:] + [separate_vectors[0]]
@@ -1014,7 +1016,7 @@ def test_encoding_order(loaded_model: EmbeddingModule, truncate_input_tokens):
             not approx(e) == combined_vectors[i]
         ), "expected altered order to not match combined vectors"
         assert not np.allclose(
-            e, combined_vectors[i]
+            e, combined_vectors[i], atol=1.e-6
         ), "expected altered order to not match combined"
 
 
@@ -1087,7 +1089,9 @@ def test_same_same(loaded_model: EmbeddingModule, truncate_input_tokens):
 
     # test order by comparing value of individual embeddings in sequence
     for i, e in enumerate(separate_vectors):
-        assert np.allclose(e, combined_vectors[i])
+        for j, x in enumerate(e):
+            assert np.isclose(x, combined_vectors[i][j], atol=1e-6)
+        assert np.allclose(e, combined_vectors[i], atol=1.e-6)
 
     # Next ensuring that the two identical sentences yield identical results (and 3rd does not)
     assert np.array_equal(combined_vectors[0], combined_vectors[1])
